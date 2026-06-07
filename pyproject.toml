@@ -13,5 +13,6 @@ authors = [
     { name = "Pratyush Kumar" }
 ]
 
-[tool.setuptools]
-packages = ["jpa*"]
+[tool.setuptools.packages.find]
+# Automatically discover the 'jpa' package and its nested subpackages (like mongo)
+include = ["jpa*"]
