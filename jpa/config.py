@@ -80,6 +80,8 @@ def _load_and_interpolate_yaml(file_path: Path) -> dict[str, Any]:
     return _as_dict(loaded, context=str(file_path))
 
 
+
+
 class ConfigSettings:
     def __init__(self):
         # 1. Bootstrap: Read the master settings.yml to find the active profile
@@ -106,6 +108,7 @@ class ConfigSettings:
 
         framework_config = _as_dict(self._config_data.get("framework"), context=f"{profile_filename}.framework")
         framework_logging_config = _as_dict(framework_config.get("logging"), context=f"{profile_filename}.framework.logging")
+        self.framework_config = framework_config
         self.framework_logs_enabled = bool(framework_logging_config.get("enabled", False))
         self.framework_log_level = _parse_log_level(str(framework_logging_config.get("level", "INFO")))
         self.framework_log_format = str(framework_logging_config.get("format", DEFAULT_FRAMEWORK_LOG_FORMAT))
@@ -145,6 +148,65 @@ if not settings or not settings.database_name and not isinstance(settings.databa
     raise ValueError("Database name must be provided and it must be a string")
 db = _mongo_client[settings.database_name]
 framework_logger.debug("Mongo client initialized for database [%s]", settings.database_name)
+
+
+class ConfigPropertyDescriptor:
+    """Internal helper that extracts nested values from the configuration dictionary at runtime."""
+
+    def __init__(self, path: str, default: Any = None):
+        self.path = path
+        self.default = default
+
+    def __get__(self, instance: Any, owner: Any) -> Any:
+        # If called from the class level (e.g., BookingRepository.mongo_db_name), return descriptor
+        if instance is None:
+            return self
+
+        # Break apart dot-notation strings like "app.mongo.dbname"
+        keys = self.path.split(".")
+        # Pull live parsed dictionary payload from our system settings singleton
+        current_node = settings._config_data
+
+        for key in keys:
+            if isinstance(current_node, dict) and key in current_node:
+                current_node = current_node[key]
+            else:
+                return self.default
+        return current_node
+
+
+def value(place_holder: str) -> Any:
+    """
+    Spring Boot-inspired property extraction configuration tool.
+    Validates formatting syntax and routes lookups directly to the settings configuration dictionary.
+    """
+    # 1. Enforce your validation constraint
+    if place_holder.startswith("${") and not place_holder.endswith("}"):
+        raise ValueError(f"Invalid place holder: {place_holder}")
+
+    # 2. Extract key path and optional fallback default value
+    if place_holder.startswith("${") and place_holder.endswith("}"):
+        raw_content = place_holder[2:-1]  # Strip '${' and '}'
+
+        # Support default fallbacks split by a colon (e.g., ${app.mongo.dbname:jpa_db})
+        if ":" in raw_content:
+            path, default_val = raw_content.split(":", 1)
+            # Basic type-casting handling for primitives
+            if default_val.isdigit():
+                default_val = int(default_val)
+            elif default_val.lower() == "true":
+                default_val = True
+            elif default_val.lower() == "false":
+                default_val = False
+        else:
+            path = raw_content
+            default_val = None
+
+        return ConfigPropertyDescriptor(path, default_val)
+
+    # Fallback support if they provide a raw dot-notation string without wrapper syntax
+    return ConfigPropertyDescriptor(place_holder)
+
 
 
 def get_collection(collection_name: str):
