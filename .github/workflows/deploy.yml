@@ -25,6 +25,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Update version in pyproject.toml
+        run: |
+          TAG=$(git describe --tags --abbrev=0)
+          VERSION=${TAG#v}
+          sed -i "s|VERSION|$VERSION|g" pyproject.toml 
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
