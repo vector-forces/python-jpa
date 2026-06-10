@@ -1,8 +1,9 @@
 import inspect
 import re
 from typing import Any, Callable, ClassVar, Generic, TypeVar, cast, get_args, get_origin, get_type_hints, List
+from unittest import result
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from bson import ObjectId, errors
 
 from jpa.config import get_collection, get_framework_logger
@@ -10,6 +11,12 @@ from jpa.config import get_collection, get_framework_logger
 T = TypeVar("T", bound=BaseModel)
 F = TypeVar("F", bound=Callable[..., Any])
 framework_logger = get_framework_logger("repository")
+
+DEFAULT_DOCUMENT_CONFIG = dict[str, Any] = {
+    "populate_by_name": True,
+    "arbitrary_types_allowed": True,
+    "json_encoders": {ObjectId: str}
+}
 
 
 class DocumentModel(BaseModel):
@@ -31,6 +38,20 @@ def document(name: str) -> Callable[[type[DocumentModel]], type[DocumentModel]]:
 
     def decorator(cls):
         cls.__collection_name__ = name
+        current_cfs = dict(getattr(cls, "model_config", {}) or {})
+        current_encoders = dict(current_cfs.get("json_encoders", {}) or {})
+        merged_encoders = {
+            **DEFAULT_DOCUMENT_CONFIG["json_encoders"],
+            **current_encoders
+        }
+        merged_cfs = {
+            **DEFAULT_DOCUMENT_CONFIG["model_config"],
+            **current_cfs,
+            "json_encoders": merged_encoders,
+        }
+        cls.model_config = ConfigDict(**merged_cfs)
+        if hasattr(cls, "model_rebuild"):
+            cls.model_rebuild(force=True)
         return cls
 
     return decorator
@@ -65,7 +86,8 @@ class RepositoryMeta(type):
                 is_convention = re.match(r"(find_by|find_all_by|exists_by|count_by)_(.*)", attr_name)
 
                 if not is_convention:
-                    raise ValueError("Convention does not exists")
+                    framework_logger.info("Convention does not exists, relying on user implementation")
+                    return cls
 
                 if query_template or is_convention is not None:
                     hints = get_type_hints(attr_value)
@@ -280,17 +302,25 @@ class IRepository(Generic[T], metaclass=RepositoryMeta):
         cursor = self.collection.find()
 
         # 2. Local serialization helper to clean BSON primary keys
-        def sanitize(doc):
-            if doc and "_id" in doc:
-                doc = dict(doc)
-                doc["_id"] = str(doc["_id"])
-            return doc
+        # def sanitize(doc):
+        #     if doc and "_id" in doc:
+        #         doc = dict(doc)
+        #         doc["_id"] = str(doc["_id"])
+        #     return doc
 
         # 3. Instantiate using self._entity_cls (which holds the real model at runtime)
-        return [self._entity_cls(**sanitize(data_dict)) for data_dict in cursor]
+        return [self._entity_cls(**dict(data_dict)) for data_dict in cursor]
 
     def find(self, query_dict: dict) -> T:
         data = self.collection.find(query_dict)
         if not data:
             raise ValueError("No data found")
         return dict(data)
+
+    def delete(self, resource_id: str) -> bool:
+        query_result = self.collection.delete_one({"_id": ObjectId(resource_id)})
+        return query_result.deleted_count > 0
+
+    def update(self, resource_id: str, data:dict):
+        query_result = self.collection.update_one({"_id": ObjectId(resource_id)}, {"$set": data})
+        return query_result.modified_count > 0
