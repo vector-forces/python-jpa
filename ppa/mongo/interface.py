@@ -39,19 +39,34 @@ class DocumentModel(BaseModel):
         return super().model_dump(**kwargs)
 
 
+# Inherit from list[T] so we can use DocumentList[User], DocumentList[Booking], etc.
+class DocumentList(list[T]):
+    """
+    List of documents that can be used to perform bulk operations.
+    Inherits default configurations
+    """
+
+    def model_dump(self, **kwargs: Any) -> list[dict[str, Any]]:
+        return [doc.model_dump(**kwargs) for doc in self]
+
+
 def query(definition: dict[str, Any]) -> Callable[[F], F]:
     """Annotation to specify a custom MongoDB query template."""
+
     def decorator(func: F) -> F:
         func.__query_template__ = definition
         return func
+
     return decorator
 
 
 def document(name: str) -> Callable[[type[DocumentModel]], type[DocumentModel]]:
     """Class decorator to bind a Pydantic model to a MongoDB collection."""
+
     def decorator(cls):
         cls.__collection_name__ = name
         return cls
+
     return decorator
 
 
@@ -256,9 +271,12 @@ def execute_dynamic_query(
     if strategy == "exists_by" or origin_type is bool:
         return collection.count_documents(processed_query, limit=1) > 0
 
-    if origin_type is list:
+    # UPDATE: Support both standard lists and our new DocumentList
+    if origin_type in (list, DocumentList):
         cursor = collection.find(processed_query)
-        return [entity_cls.model_validate(doc) for doc in cursor]
+        results = [entity_cls.model_validate(doc) for doc in cursor]
+        # Return the specific list type requested
+        return DocumentList(results) if origin_type is DocumentList else results
 
     doc = collection.find_one(processed_query)
     return entity_cls.model_validate(doc) if doc else None
@@ -291,9 +309,10 @@ class IRepository(Generic[T], metaclass=RepositoryMeta):
         inserted_data = self.collection.insert_many(data)
         return [str(obj_id) for obj_id in inserted_data.inserted_ids]
 
-    def find_all(self) -> list[T]:
+    def find_all(self) -> DocumentList[T]:
         cursor = self.collection.find()
-        return [self._entity_cls.model_validate(doc) for doc in cursor]
+        # UPDATE: Wrap the list comprehension in DocumentList
+        return DocumentList([self._entity_cls.model_validate(doc) for doc in cursor])
 
     def find(self, query_dict: dict) -> T:
         data = self.collection.find_one(query_dict)
